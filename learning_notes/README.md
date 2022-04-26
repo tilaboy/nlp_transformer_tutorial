@@ -16,3 +16,16 @@ Text classification or sentimental analysis
 - train a logitical-regression/mlp on top of it
 - For classification, one widely used is a AutoModelForSequenceClassification model
   since the last layer is not trained, when loading this model, you will see a warning
+
+## chapter 3:
+
+Details on transformer, how each part can be implemented in pytorch
+
+## chapter 4:
+
+multilingual NER
+
+- ner problem, added a tokenclassification task
+- transfer learning;
+  - first train on one language, then fine-tune on more and more data, to see how performance changes on all languages
+  - train on all language
