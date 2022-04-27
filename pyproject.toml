@@ -1,0 +1,29 @@
+[tool.poetry]
+name = "nlp_transformer_tutorial"
+version = "0.1.0"
+description = "a tutorial to practice hugging face transformers and dataset module, focusing on NLP problems"
+authors = ["Chao Li <chaoli@textkernel.nl>"]
+license = "MIT"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.9"
+datasets = ">=0.1"
+transformers = ">0.1"
+sklearn = ">0.1"
+tensorflow = "^2"
+pandas = "^1.1"
+numpy = "^1.19"
+matplotlib = "^3.3"
+umap-learn = ">=0.1"
+umap-learnplot = ">=0.1"
+
+[tool.poetry.dev-dependencies]
+flake8 = "^4"
+black = "^22"
+pytest = "7.1.0"
+pytest-cov = "3.0.0"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
