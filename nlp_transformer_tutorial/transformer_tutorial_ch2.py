@@ -2,15 +2,15 @@ from datasets import list_datasets
 from datasets import load_dataset
 import pandas as pd
 import matplotlib.pyplot as plt
-from transformers import AutoTokenizer, pipeline
-from transformers import DistilBertTokenizer
-from transformers import Trainer, TrainingArguments
-from transformers import AutoModel, TFAutoModel
+from transformers import AutoTokenizer, pipeline, AutoModel, TFAutoModel
+from transformers import DistilBertTokenizer, Trainer, TrainingArguments
 from transformers import AutoModelForSequenceClassification, TFAutoModelForSequenceClassification
 from transformers import DataCollatorWithPadding
 import tensorflow as tf
 import torch
 import math
+import umap
+import umap.plot
 from torch.nn.functional import cross_entropy
 import numpy as np
 from sklearn.preprocessing import MinMaxScaler
