@@ -35,22 +35,21 @@ LOGGER.info('using device %s', device)
 LOGGER.info('loading tokenizer from %s', model_ckpt)
 tokenizer = AutoTokenizer.from_pretrained(model_ckpt)
 LOGGER.info('loading model from %s', model_ckpt)
-model = AutoModel.from_pretrained(model_ckpt).to(device)
 
 def tokenize(batch):
     return tokenizer(batch["text"], padding=True, truncation=True)
 
-def extract_hidden_states(batch): # Place model inputs on the GPU
-	  inputs = {
-        k: v.to(device)
-        for k, v in batch.items()
-        if k in tokenizer.model_input_names
-	  }
-    # Extract last hidden states
-	  with torch.no_grad():
-		    last_hidden_state = model(**inputs).last_hidden_state
-    # Return vector for [CLS] token
-	  return {"hidden_state": last_hidden_state[:,0].cpu().numpy()}
+def extract_hidden_states(model): # Place model inputs on the GPU
+    def process_to_hidden_states(batch):
+        inputs = {k: v.to(device)
+                for k, v in batch.items()
+                if k in tokenizer.model_input_names}
+        # Extract last hidden states
+        with torch.no_grad():
+          last_hidden_state = model(**inputs).last_hidden_state
+        # Return vector for [CLS] token
+        return {"hidden_state": last_hidden_state[:,0].cpu().numpy()}
+    return process_to_hidden_states
 
 def plot_confusion_matrix(y_preds, y_true, labels, output_filename='confusion_matrix.png'):
     cm = confusion_matrix(y_true, y_preds, normalize="true")
@@ -68,16 +67,18 @@ def compute_metrics(pred):
     acc = accuracy_score(labels, preds)
     return {"accuracy": acc, "f1": f1}
 
-def forward_pass_with_label(batch): # Place all input tensors on the same device as the model
-    inputs = {k:v.to(device) for k,v in batch.items() if k in tokenizer.model_input_names}
-    with torch.no_grad():
-        output = model(**inputs)
-    pred_label = torch.argmax(output.logits, axis=-1)
-    loss = cross_entropy(output.logits, batch["label"].to(device), reduction="none")
-    # Place outputs on CPU for compatibility with other dataset columns
-    return {"loss": loss.cpu().numpy(), "predicted_label": pred_label.cpu().numpy()}
+def forward_pass(model):
+    def forward_pass_with_label(batch): # Place all input tensors on the same device as the model
+        inputs = {k:v.to(device) for k,v in batch.items() if k in tokenizer.model_input_names}
+        with torch.no_grad():
+            output = model(**inputs)
+        pred_label = torch.argmax(output.logits, axis=-1)
+        loss = cross_entropy(output.logits, batch["label"].to(device), reduction="none")
+        # Place outputs on CPU for compatibility with other dataset columns
+        return {"loss": loss.cpu().numpy(), "predicted_label": pred_label.cpu().numpy()}
+    return forward_pass_with_label
 
-def check_sample_prob(model, custom_tweet, frame_type):
+def check_sample_prob(model, label_names, custom_tweet, frame_type):
     input_custom_tweet = tokenizer(custom_tweet, return_tensors=frame_type)
     if frame_type == 'pt':
         input_custom_tweet = {k:v.to(device) for k,v in input_custom_tweet.items()}
@@ -99,10 +100,6 @@ def check_sample_prob(model, custom_tweet, frame_type):
     output_filename = 'custom_tweet_example_prob_' + frame_type + '.png'
     plt.savefig(output_filename)
 
-
-
-def label_int2str(row):
-	  return emotions["train"].features["label"].int2str(row)
 
 def check_data_set(dataset):
     dataset.set_format(type='pandas')
@@ -139,22 +136,28 @@ def check_tokenizer(text):
     #    print(f'from 0 to {i}th example', tokenize(emotions["train"][:i]))
 
     inputs = {k:v.to(device) for k,v in inputs_pt.items()}
-    with torch.no_grad():
-        outputs = model(**inputs)
-    print('model output size:', outputs.last_hidden_state.size())
+    return inputs
 
 
 def main():
     dataset_name = 'emotion'
+    LOGGER.info('loading base model %s', model_ckpt)
+    base_model = AutoModel.from_pretrained(model_ckpt).to(device)
     LOGGER.info('loading dataset %s', dataset_name)
     emotions = load_dataset(dataset_name)
+    emotions['train'] = emotions['train'].shuffle(seed=42).select(range(1000))
+    emotions['validation'] = emotions['validation'].shuffle(seed=42).select(range(200))
     print('\tcolumns in dataset:', emotions['train'].column_names)
     print('\tnr sampels in training', len(emotions['train']))
     print('\tfeatures in training set', emotions['train'].features)
     print('\tfirst sample of training set', emotions['train'][0])
 
     check_data_set(emotions)
-    check_tokenizer("Tokenizing text is a core task of NLP.")
+    tokenized_input = check_tokenizer("Tokenizing text is a core task of NLP.")
+    with torch.no_grad():
+        outputs = base_model(**tokenized_input)
+    print('model output size:', outputs.last_hidden_state.size())
+
 
     LOGGER.info('tokenize dataset')
     emotions_encoded = emotions.map(tokenize, batched=True, batch_size=None)
@@ -162,12 +165,13 @@ def main():
 
     LOGGER.info('apply extract hidden state')
     emotions_encoded.set_format("torch", columns=["input_ids", "attention_mask", "label"])
-    emotions_hidden = emotions_encoded.map(extract_hidden_states, batched=True)
+    emotions_hidden = emotions_encoded.map(extract_hidden_states(base_model), batched=True)
     print('column names:', emotions_hidden["train"].column_names)
 
     LOGGER.info('check labels')
     label_names = emotions["train"].features["label"].names
     label_mapper = {i:label_names[i] for i in range(len(label_names))}
+    label_int2str = lambda x: label_mapper[x]
     print(f'label_mapper, {label_mapper}')
     print('train data shape, nr_columns, num_row', emotions_hidden['train'].shape, emotions_hidden['train'].num_columns, emotions_hidden['train'].num_rows)
     LOGGER.info('check first 10 labels')
@@ -218,6 +222,7 @@ def main():
         per_device_train_batch_size=batch_size,
         per_device_eval_batch_size=batch_size,
         weight_decay=0.01,
+        optim="adamw_torch",
         evaluation_strategy="epoch",
         disable_tqdm=False,
         logging_steps=logging_steps,
@@ -240,22 +245,21 @@ def main():
 
     emotions_encoded.set_format("torch", columns=["input_ids", "attention_mask", "label"])
     # Compute loss values
-    model = pt_model
-    emotions_encoded["validation"] = emotions_encoded["validation"].map( forward_pass_with_label, batched=True, batch_size=16)
+    emotions_encoded["validation"] = emotions_encoded["validation"].map( forward_pass(pt_model), batched=True, batch_size=16)
     emotions_encoded.set_format("pandas")
     cols = ["text", "label", "predicted_label", "loss"]
     df_test = emotions_encoded["validation"][:][cols]
     df_test["label"] = df_test["label"].apply(label_int2str)
-    df_test["predicted_label"] = (df_test["predicted_label"].apply(label_int2str))
+    df_test["predicted_label"] = df_test["predicted_label"].apply(label_int2str)
     LOGGER.info('check items of 10 biggest loss')
-    df_test.sort_values("loss", ascending=False).head(10)
+    print(df_test.sort_values("loss", ascending=False).head(10))
 
     LOGGER.info('check items of 10 smallest loss')
-    df_test.sort_values("loss", ascending=True).head(10)
+    print(df_test.sort_values("loss", ascending=True).head(10))
 
     LOGGER.info('check logit of a sample input')
     custom_tweet = "I saw a movie today and it was really good."
-    check_sample_prob(pt_model, custom_tweet, 'pt')
+    check_sample_prob(pt_model, label_names, custom_tweet, 'pt')
 
     LOGGER.info('train tf model')
     tf_model = TFAutoModelForSequenceClassification.from_pretrained(model_ckpt, num_labels=num_labels)
@@ -279,7 +283,7 @@ def main():
     tf_preds_output = tf_model.predict(tf_eval_dataset)
     tf_preds = np.argmax(tf_preds_output['logits'], axis=1)
     plot_confusion_matrix(tf_preds, emotions_encoded["validation"]['label'], label_names)
-    check_sample_prob(tf_model, custom_tweet, 'tf')
+    check_sample_prob(tf_model, label_names, custom_tweet, 'tf')
 
 if __name__ == '__main__':
     main()
