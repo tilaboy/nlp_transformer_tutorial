@@ -145,8 +145,9 @@ def main():
     base_model = AutoModel.from_pretrained(model_ckpt).to(device)
     LOGGER.info('loading dataset %s', dataset_name)
     emotions = load_dataset(dataset_name)
-    emotions['train'] = emotions['train'].shuffle(seed=42).select(range(1000))
-    emotions['validation'] = emotions['validation'].shuffle(seed=42).select(range(200))
+    # resize the dataset for quicker run
+    #emotions['train'] = emotions['train'].shuffle(seed=42).select(range(1000))
+    #emotions['validation'] = emotions['validation'].shuffle(seed=42).select(range(200))
     print('\tcolumns in dataset:', emotions['train'].column_names)
     print('\tnr sampels in training', len(emotions['train']))
     print('\tfeatures in training set', emotions['train'].features)
