@@ -7,22 +7,25 @@ license = "MIT"
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = "^3.9"
-datasets = ">=0.1"
-transformers = ">0.1"
-sklearn = ">0.1"
-tensorflow = "^2"
+python = "3.7.13"
+datasets = "^2.1.0"
+transformers = "^4.1"
+scikit-learn = "^1.0"
+tensorflow = "^2.0"
+torch = "^1.10"
 pandas = "^1.1"
 numpy = "^1.19"
 matplotlib = "^3.3"
-umap-learn = ">=0.1"
-umap-learnplot = ">=0.1"
+umap-learn = {extras = ["plot"], version = "^0.5.3"}
 
 [tool.poetry.dev-dependencies]
-flake8 = "^4"
-black = "^22"
+flake8 = "^4.0"
+black = "^22.0"
 pytest = "7.1.0"
 pytest-cov = "3.0.0"
+
+[tool.poetry.scripts]
+transformer_tutorial_ch2 = 'nlp_transformer_tutorial.transformer_tutorial_ch2:main'
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
