@@ -150,28 +150,30 @@ def compute_metrics(eval_pred):
 def encode_panx_dataset(corpus):
     return corpus.map(tokenize_and_align_labels, batched=True, remove_columns=['langs', 'ner_tags', 'tokens'])
 
+def get_train_args(model_name, batch_size, num_epochs, logging_steps):
+    return TrainingArguments(output_dir=model_name,
+                              log_level="error",
+                              num_train_epochs=num_epochs,
+                              per_device_train_batch_size=batch_size,
+                              per_device_eval_batch_size=batch_size,
+                              evaluation_strategy="epoch",
+                              save_steps=1e6,
+                              weight_decay=0.01,
+                              disable_tqdm=False,
+                              logging_steps=logging_steps,
+                              push_to_hub=False)
+
 def train_model(checkpoint_name, config, model_name, train_set, validation_set, tokenizer):
     num_epochs = 3
     batch_size = 24
     logging_steps = len(panx_de_encoded["train"]) // batch_size
     model_name = f"{xlmr_model_name}-finetuned-panx-de"
-    training_args = TrainingArguments(output_dir=model_name,
-                                      log_level="error",
-                                      num_train_epochs=num_epochs,
-                                      per_device_train_batch_size=batch_size,
-                                      per_device_eval_batch_size=batch_size,
-                                      evaluation_strategy="epoch",
-                                      save_steps=1e6,
-                                      weight_decay=0.01,
-                                      disable_tqdm=False,
-                                      logging_steps=logging_steps,
-                                      push_to_hub=False)
 
     def model_init():
         return XLMRobertaForTokenClassification.from_pretrained(xlmr_model_name, config=xlmr_config).to(device)
 
     trainer = Trainer(model_init=model_init,
-                      args=training_args,
+                      args=get_train_args(model_name, batch_size, num_epochs, logging_steps),
                       data_collator=DataCollatorForTokenClassification(xlmr_tokenizer),
                       compute_metrics=compute_metrics,
                       train_dataset=panx_de_encoded["train"],
@@ -204,6 +206,36 @@ def get_samples(df):
 
 def get_f1_score(trainer, dataset):
     return trainer.predict(dataset).metrics["test_f1"]
+
+def evaluate_lang_performance(trainer, data_set):
+    encoded_dataset = encode_panx_dataset(dataset)
+    return get_f1_score(trainer, encoded_dataset["test"])
+
+def train_on_subset(model_name, dataset, num_samples, training_args):
+    train_ds = dataset["train"].shuffle(seed=42).select(range(num_samples))
+    valid_ds = dataset["validation"]
+    test_ds = dataset["test"]
+    get_train_args(model_name, 24, 3, len(train_ds) // 24),
+
+    trainer = Trainer(model_init=model_init,
+                      args=training_args,
+                      data_collator=data_collator,
+                      compute_metrics=compute_metrics,
+                      train_dataset=train_ds,
+                      eval_dataset=valid_ds,
+                      tokenizer=xlmr_tokenizer)
+    trainer.train()
+    if training_args.push_to_hub:
+        trainer.push_to_hub(commit_message="Training completed!")
+    f1_score = get_f1_score(trainer, test_ds)
+    return pd.DataFrame.from_dict( {"num_samples": [len(train_ds)], "f1_score": [f1_score]})
+
+def concatenate_splits(corpora):
+    multi_corpus = DatasetDict()
+    for split in corpora[0].keys():
+        multi_corpus[split] = concatenate_datasets( [corpus[split] for corpus in corpora]).shuffle(seed=42)
+    return multi_corpus
+
 
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -321,9 +353,22 @@ def main():
         display(sample)
 
     f1_scores = defaultdict(dict)
-    f1_scores["de"]["de"] = get_f1_score(trainer, panx_de_encoded["test"])
-    print(f"F1-score of [de] model on [de] dataset: {f1_scores['de']['de']:.3f}")
+    for lang in ['de', 'fr', 'it', 'en']:
+        f1_scores["de"][lang] = evaluate_lang_performance(trainer, panx_ch[lang])
+        print(f"F1-score of [de] model on [{lang}] dataset: {f1_scores['de'][lang]:.3f}")
 
+
+    metrics_df = pd.DataFrame()
+    for num_samples in [200, 500, 1000, 1500, 2000]:
+        metrics_df = metrics_df.append( train_on_subset(panx_fr_encoded, num_samples), ignore_index=True)
+    fig, ax = plt.subplots()
+    ax.axhline(f1_scores["de"]["fr"], ls="--", color="r")
+    metrics_df.set_index("num_samples").plot(ax=ax)
+    plt.legend(["Zero-shot from de", "Fine-tuned on fr"], loc="lower right")
+    plt.ylim((0, 1))
+    plt.xlabel("Number of Training Samples")
+    plt.ylabel("F1 Score")
+    plt.savefig('zero_shot_fr.png')
 
 if __name__ == '__main__':
     main()
