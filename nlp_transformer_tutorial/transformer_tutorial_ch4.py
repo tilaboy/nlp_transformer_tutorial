@@ -370,5 +370,48 @@ def main():
     plt.ylabel("F1 Score")
     plt.savefig('zero_shot_fr.png')
 
+    panx_all_encoded = concatenate_splits([panx_de_encoded, panx_fr_encoded])
+    training_args.logging_steps = len(panx_all_encoded["train"]) // batch_size
+    training_args.push_to_hub = False
+    training_args.output_dir = "xlm-roberta-base-finetuned-panx-de-fr"
+    trainer = Trainer(model_init=model_init,
+                      args=training_args,
+                      data_collator=data_collator,
+                      compute_metrics=compute_metrics,
+                      tokenizer=xlmr_tokenizer,
+                      train_dataset=panx_all_encoded["train"],
+                      eval_dataset=panx_all_encoded["validation"])
+    trainer.train()
+
+    for lang in ['de', 'fr', 'it', 'en']:
+        f1_scores["de_fr"][lang] = evaluate_lang_performance(lang, trainer)
+        print(f"F1-score of [de_fr] model on [{lang}] dataset: {f1_scores['de_fr'][lang]:.3f}")
+
+    corpora = [panx_de_encoded]
+    # Exclude German from iteration
+    for lang in langs[1:]:
+        training_args.output_dir = f"xlm-roberta-base-finetuned-panx-{lang}"
+        # Fine-tune on monolingual corpus
+        ds_encoded = encode_panx_dataset(panx_ch[lang])
+        metrics = train_on_subset(ds_encoded, ds_encoded["train"].num_rows)
+        # Collect F1-scores in common dict
+        f1_scores[lang][lang] = metrics["f1_score"][0]
+        # Add monolingual corpus to list of corpora to concatenate
+        corpora.append(ds_encoded)
+
+    corpora_encoded = concatenate_splits(corpora)
+    training_args.logging_steps = len(corpora_encoded["train"]) // batch_size
+    training_args.output_dir = "xlm-roberta-base-finetuned-panx-all"
+    trainer = Trainer(model_init=model_init, args=training_args, data_collator=data_collator, compute_metrics=compute_metrics, tokenizer=xlmr_tokenizer, train_dataset=corpora_encoded["train"], eval_dataset=corpora_encoded["validation"])
+    trainer.train()
+
+    for idx, lang in enumerate(langs):
+        f1_scores["all"][lang] = get_f1_score(trainer, corpora[idx]["test"])
+    scores_data = {"de": f1_scores["de"], "each": {lang: f1_scores[lang][lang] for lang in langs}, "all": f1_scores["all"]}
+    f1_scores_df = pd.DataFrame(scores_data).T.round(4)
+    f1_scores_df.rename_axis(index="Fine-tune on", columns="Evaluated on", inplace=True)
+    print(f1_scores_df)
+
+
 if __name__ == '__main__':
     main()
