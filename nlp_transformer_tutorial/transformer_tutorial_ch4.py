@@ -170,7 +170,7 @@ def train_model(checkpoint_name, config, model_name, train_set, validation_set, 
     model_name = f"{xlmr_model_name}-finetuned-panx-de"
 
     def model_init():
-        return XLMRobertaForTokenClassification.from_pretrained(xlmr_model_name, config=xlmr_config).to(device)
+        return XLMRobertaForTokenClassification.from_pretrained(xlmr_model_name, config=config).to(device)
 
     trainer = Trainer(model_init=model_init,
                       args=get_train_args(model_name, batch_size, num_epochs, logging_steps),
@@ -243,12 +243,12 @@ def main():
     check_data_set()
     langs = ["de", "fr", "it", "en"]
     panx_ch = fetch_data(langs)
+
     LOGGER.info('apply ner tag converting')
     tags = panx_ch["de"]["train"].features["ner_tags"].feature
     print(tags)
-    panx_de = panx_ch["de"].map(create_tag_names)
+    panx_de = panx_ch["de"].map(create_tag_names(tags))
     print(panx_de["train"][0])
-
     dataset_summary(panx_ch["de"])
 
     LOGGER.info('BERT V.S. Roberta')
@@ -269,14 +269,16 @@ def main():
     LOGGER.info('load the xlmr model, and test with example')
     index2tag = {idx: tag for idx, tag in enumerate(tags.names)}
     tag2index = {tag: idx for idx, tag in enumerate(tags.names)}
-    xlmr_config = AutoConfig.from_pretrained(xlmr_model_name, num_labels=tags.num_classes, id2label=index2tag, label2id=tag2index)
+    xlmr_config = AutoConfig.from_pretrained(xlmr_model_name,
+                                             num_labels=tags.num_classes,
+                                             id2label=index2tag,
+                                             label2id=tag2index)
     xlmr_model = XLMRobertaForTokenClassification.from_pretrained(xlmr_model_name, config=xlmr_config).to(device)
-
     input_ids = xlmr_tokenizer.encode(text, return_tensors="pt")
     df_example_encoded = pd.DataFrame([xlmr_tokens, input_ids[0].numpy()], index=["Tokens", "Input IDs"])
     print(df_example_encoded.describe())
 
-    xlmr_trainer = train_model()
+    xlmr_trainer = train_model(xlmr_model_name, xlmr_config)
     print('tags to predict', tags)
     text_de = "Jeff Dean ist ein Informatiker bei Google in Kalifornien"
     tag_text(text_de, tags, trainer.model, xlmr_tokenizer)
