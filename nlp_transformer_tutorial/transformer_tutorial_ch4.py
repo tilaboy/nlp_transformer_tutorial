@@ -150,6 +150,7 @@ def compute_metrics(eval_pred):
 def encode_panx_dataset(corpus):
     return corpus.map(tokenize_and_align_labels, batched=True, remove_columns=['langs', 'ner_tags', 'tokens'])
 
+
 def get_train_args(model_name, batch_size, num_epochs, logging_steps):
     return TrainingArguments(output_dir=model_name,
                               log_level="error",
@@ -167,7 +168,6 @@ def train_model(checkpoint_name, config, model_name, train_set, validation_set, 
     num_epochs = 3
     batch_size = 24
     logging_steps = len(panx_de_encoded["train"]) // batch_size
-    model_name = f"{xlmr_model_name}-finetuned-panx-de"
 
     def model_init():
         return XLMRobertaForTokenClassification.from_pretrained(xlmr_model_name, config=config).to(device)
@@ -277,14 +277,18 @@ def main():
     input_ids = xlmr_tokenizer.encode(text, return_tensors="pt")
     df_example_encoded = pd.DataFrame([xlmr_tokens, input_ids[0].numpy()], index=["Tokens", "Input IDs"])
     print(df_example_encoded.describe())
-
-    xlmr_trainer = train_model(xlmr_model_name, xlmr_config)
+    panx_de_encoded = encode_panx_dataset(panx_ch["de"])
+    xlmr_trainer = train_model(xlmr_model_name,
+                               xlmr_config,
+                               f"{xlmr_model_name}-finetuned-panx-de",
+                               panx_de_encoded["train"],
+                               panx_de_encoded["validation"],
+                               xlmr_tokenizer)
     print('tags to predict', tags)
     text_de = "Jeff Dean ist ein Informatiker bei Google in Kalifornien"
     tag_text(text_de, tags, trainer.model, xlmr_tokenizer)
     text_fr = "Jeff Dean est informaticien chez Google en Californie"
     tag_text(text_fr, tags, trainer.model, xlmr_tokenizer)
-
 
     data_collator = DataCollatorForTokenClassification(xlmr_tokenizer)
 
