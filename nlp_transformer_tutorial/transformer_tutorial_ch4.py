@@ -151,34 +151,35 @@ def encode_panx_dataset(corpus):
     return corpus.map(tokenize_and_align_labels, batched=True, remove_columns=['langs', 'ner_tags', 'tokens'])
 
 
-def get_train_args(model_name, batch_size, num_epochs, logging_steps):
-    return TrainingArguments(output_dir=model_name,
-                              log_level="error",
-                              num_train_epochs=num_epochs,
-                              per_device_train_batch_size=batch_size,
-                              per_device_eval_batch_size=batch_size,
-                              evaluation_strategy="epoch",
-                              save_steps=1e6,
-                              weight_decay=0.01,
-                              disable_tqdm=False,
-                              logging_steps=logging_steps,
-                              push_to_hub=False)
+def get_train_args(output_dir, batch_size, num_epochs, logging_steps):
+    return TrainingArguments(output_dir=output_dir,
+                             log_level="error",
+                             num_train_epochs=num_epochs,
+                             per_device_train_batch_size=batch_size,
+                             per_device_eval_batch_size=batch_size,
+                             evaluation_strategy="epoch",
+                             save_steps=1e6,
+                             weight_decay=0.01,
+                             disable_tqdm=False,
+                             logging_steps=logging_steps,
+                             push_to_hub=False)
 
-def train_model(checkpoint_name, config, model_name, train_set, validation_set, tokenizer):
+def model_init():
+    return XLMRobertaForTokenClassification.from_pretrained(model_name, config=config).to(device)
+
+
+def train_model(model_name, config, output_dir, data_collator, train_set, validation_set, tokenizer):
     num_epochs = 3
     batch_size = 24
-    logging_steps = len(panx_de_encoded["train"]) // batch_size
-
-    def model_init():
-        return XLMRobertaForTokenClassification.from_pretrained(xlmr_model_name, config=config).to(device)
+    logging_steps = len(train_set) // batch_size
 
     trainer = Trainer(model_init=model_init,
                       args=get_train_args(model_name, batch_size, num_epochs, logging_steps),
-                      data_collator=DataCollatorForTokenClassification(xlmr_tokenizer),
+                      data_collator=data_collator,
                       compute_metrics=compute_metrics,
-                      train_dataset=panx_de_encoded["train"],
-                      eval_dataset=panx_de_encoded["validation"],
-                      tokenizer=xlmr_tokenizer)
+                      train_dataset=train_set,
+                      eval_dataset=validation_set,
+                      tokenizer=tokenizer)
     trainer.train()
     return trainer
 
@@ -211,20 +212,15 @@ def evaluate_lang_performance(trainer, data_set):
     encoded_dataset = encode_panx_dataset(dataset)
     return get_f1_score(trainer, encoded_dataset["test"])
 
-def train_on_subset(model_name, dataset, num_samples, training_args):
+def train_on_subset(model_name, config, output_dir, dataset, num_samples, tokenizer):
     train_ds = dataset["train"].shuffle(seed=42).select(range(num_samples))
     valid_ds = dataset["validation"]
     test_ds = dataset["test"]
-    get_train_args(model_name, 24, 3, len(train_ds) // 24),
+    num_epochs = 3
+    batch_size = 24
+    logging_steps = len(train_ds) // batch_size
+    subset_trainer = train_model(model_name, config, output_dir, train_ds, valid_ds, tokenizer)
 
-    trainer = Trainer(model_init=model_init,
-                      args=training_args,
-                      data_collator=data_collator,
-                      compute_metrics=compute_metrics,
-                      train_dataset=train_ds,
-                      eval_dataset=valid_ds,
-                      tokenizer=xlmr_tokenizer)
-    trainer.train()
     if training_args.push_to_hub:
         trainer.push_to_hub(commit_message="Training completed!")
     f1_score = get_f1_score(trainer, test_ds)
@@ -277,12 +273,18 @@ def main():
     input_ids = xlmr_tokenizer.encode(text, return_tensors="pt")
     df_example_encoded = pd.DataFrame([xlmr_tokens, input_ids[0].numpy()], index=["Tokens", "Input IDs"])
     print(df_example_encoded.describe())
-    panx_de_encoded = encode_panx_dataset(panx_ch["de"])
+    panx_encoded = dict()
+    for lang in langs:
+        panx_encoded[lang] = encode_panx_dataset(panx_ch[lang])
+    xlmr_data_collator = DataCollatorForTokenClassification(xlmr_tokenizer)
+
+    de_model_path = f"{xlmr_model_name}-finetuned-panx-de"
     xlmr_trainer = train_model(xlmr_model_name,
                                xlmr_config,
-                               f"{xlmr_model_name}-finetuned-panx-de",
-                               panx_de_encoded["train"],
-                               panx_de_encoded["validation"],
+                               de_model_path,
+                               xlmr_data_collator,
+                               panx_encoded['de']["train"],
+                               panx_encoded['de']["validation"],
                                xlmr_tokenizer)
     print('tags to predict', tags)
     text_de = "Jeff Dean ist ein Informatiker bei Google in Kalifornien"
@@ -290,13 +292,12 @@ def main():
     text_fr = "Jeff Dean est informaticien chez Google en Californie"
     tag_text(text_fr, tags, trainer.model, xlmr_tokenizer)
 
-    data_collator = DataCollatorForTokenClassification(xlmr_tokenizer)
 
     def forward_pass_with_label(batch):
         # Convert dict of lists to list of dicts suitable for data collator
         features = [dict(zip(batch, t)) for t in zip(*batch.values())]
         # Pad inputs and labels and put all tensors on device
-        batch = data_collator(features)
+        batch = xlmr_data_collator(features)
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
         labels = batch["labels"].to(device)
@@ -312,8 +313,7 @@ def main():
         loss = loss.view(len(input_ids), -1).cpu().numpy()
         return {"loss":loss, "predicted_label": predicted_label}
 
-    valid_set = panx_de_encoded["validation"]
-    valid_set = valid_set.map(forward_pass_with_label, batched=True, batch_size=32)
+    valid_set = panx_encoded['de']["validation"].map(forward_pass_with_label, batched=True, batch_size=32)
     index2tag[-100] = "IGN"
     df = valid_set.to_pandas()
     df["input_tokens"] = df["input_ids"].apply( lambda x: xlmr_tokenizer.convert_ids_to_tokens(x))
@@ -348,25 +348,24 @@ def main():
     .T
     )
 
-    plot_confusion_matrix(df_tokens["labels"], df_tokens["predicted_label"], tags.names)
+    plot_confusion_matrix(df_tokens["labels"], df_tokens["predicted_label"], tags.names, 'de_validate_set_confusion.png')
     df['total_loss'] = df['loss'].apply(sum)
     df_tmp = df.sort_values(by='total_loss', ascending=False).head(5)
-
     for sample in get_samples(df_tmp):
-        display(sample)
+        print(display(sample))
     df_tmp = df.loc[df["input_tokens"].apply(lambda x: u"\u2581(" in x)].head(5)
     for sample in get_samples(df_tmp):
-        display(sample)
+        print(display(sample))
 
     f1_scores = defaultdict(dict)
     for lang in ['de', 'fr', 'it', 'en']:
-        f1_scores["de"][lang] = evaluate_lang_performance(trainer, panx_ch[lang])
+        f1_scores["de"][lang] = get_f1_score(trainer, panx_encoded[lang]['test'])
         print(f"F1-score of [de] model on [{lang}] dataset: {f1_scores['de'][lang]:.3f}")
-
 
     metrics_df = pd.DataFrame()
     for num_samples in [200, 500, 1000, 1500, 2000]:
-        metrics_df = metrics_df.append( train_on_subset(panx_fr_encoded, num_samples), ignore_index=True)
+        res = train_on_subset(xlmr_model_name, xlmr_config, de_model_path, panx_encoded['fr'], num_samples, xlmr_tokenizer)
+        metrics_df = metrics_df.append(res, ignore_index=True)
     fig, ax = plt.subplots()
     ax.axhline(f1_scores["de"]["fr"], ls="--", color="r")
     metrics_df.set_index("num_samples").plot(ax=ax)
@@ -376,29 +375,25 @@ def main():
     plt.ylabel("F1 Score")
     plt.savefig('zero_shot_fr.png')
 
-    panx_all_encoded = concatenate_splits([panx_de_encoded, panx_fr_encoded])
-    training_args.logging_steps = len(panx_all_encoded["train"]) // batch_size
-    training_args.push_to_hub = False
-    training_args.output_dir = "xlm-roberta-base-finetuned-panx-de-fr"
-    trainer = Trainer(model_init=model_init,
-                      args=training_args,
-                      data_collator=data_collator,
-                      compute_metrics=compute_metrics,
-                      tokenizer=xlmr_tokenizer,
-                      train_dataset=panx_all_encoded["train"],
-                      eval_dataset=panx_all_encoded["validation"])
-    trainer.train()
+    panx_all_encoded = concatenate_splits([panx_encoded['de'], panx_encoded['fr']])
+    de_fr_trainer = train_model(xlmr_model_name,
+                                xlmr_config,
+                                "xlm-roberta-base-finetuned-panx-de-fr",
+                                xlmr_data_collator
+                                panx_all_encoded["train"],
+                                panx_all_encoded["validation"],
+                                xlmr_tokenizer)
 
     for lang in ['de', 'fr', 'it', 'en']:
         f1_scores["de_fr"][lang] = evaluate_lang_performance(lang, trainer)
         print(f"F1-score of [de_fr] model on [{lang}] dataset: {f1_scores['de_fr'][lang]:.3f}")
 
-    corpora = [panx_de_encoded]
+    # TO BE CONTINUED
+    corpora = [panx_encoded['de']]
     # Exclude German from iteration
     for lang in langs[1:]:
         training_args.output_dir = f"xlm-roberta-base-finetuned-panx-{lang}"
         # Fine-tune on monolingual corpus
-        ds_encoded = encode_panx_dataset(panx_ch[lang])
         metrics = train_on_subset(ds_encoded, ds_encoded["train"].num_rows)
         # Collect F1-scores in common dict
         f1_scores[lang][lang] = metrics["f1_score"][0]
