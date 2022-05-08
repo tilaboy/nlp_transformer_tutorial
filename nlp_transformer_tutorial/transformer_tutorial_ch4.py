@@ -391,30 +391,37 @@ def main():
                                 xlmr_data_collator
                                 panx_all_encoded["train"],
                                 panx_all_encoded["validation"],
-                                xlmr_tokenizer)
+                                xlmr_tokenizer,
+                                device)
 
     for lang in ['de', 'fr', 'it', 'en']:
-        f1_scores["de_fr"][lang] = get_f1_score(trainer, panx_encoded[lang]['test'])
+        f1_scores["de_fr"][lang] = get_f1_score(de_fr_trainer, panx_encoded[lang]['test'])
         print(f"F1-score of [de_fr] model on [{lang}] dataset: {f1_scores['de_fr'][lang]:.3f}")
 
     # Exclude German from iteration
     for lang in langs[1:]:
         output_dir = f"xlm-roberta-base-finetuned-panx-{lang}"
         # Fine-tune on monolingual corpus
-        metrics = train_on_subset(panx_encoded[lang]["train"], panx_encoded[lang]["train"].num_rows)
+        metrics = train_on_subset(xlmr_model, xlmr_config, output_dir, panx_encoded[lang], panx_encoded[lang]["train"].num_rows, xlmr_tokenizer, device)
         # Collect F1-scores in common dict
         f1_scores[lang][lang] = metrics["f1_score"][0]
         # Add monolingual corpus to list of corpora to concatenate
         corpora.append(ds_encoded)
 
-    corpora_encoded = concatenate_splits(corpora)
+    corpora_encoded = concatenate_splits([panx_encoded[lang] for lang in langs])
     training_args.logging_steps = len(corpora_encoded["train"]) // batch_size
-    training_args.output_dir = "xlm-roberta-base-finetuned-panx-all"
-    trainer = Trainer(model_init=model_init, args=training_args, data_collator=data_collator, compute_metrics=compute_metrics, tokenizer=xlmr_tokenizer, train_dataset=corpora_encoded["train"], eval_dataset=corpora_encoded["validation"])
-    trainer.train()
+    all_joined_path = "xlm-roberta-base-finetuned-panx-all"
+    all_trainer = train_model(xlmr_model_name,
+                              xlmr_config,
+                              "xlm-roberta-base-finetuned-panx-all",
+                              xlmr_data_collator
+                              corpora_encoded["train"],
+                              corpora_encoded["validation"],
+                              xlmr_tokenizer,
+                              device)
 
-    for idx, lang in enumerate(langs):
-        f1_scores["all"][lang] = get_f1_score(trainer, corpora[idx]["test"])
+    for lang in langs:
+        f1_scores["all"][lang] = get_f1_score(all_trainer, panx_encoded[lang]['test'])
     scores_data = {"de": f1_scores["de"], "each": {lang: f1_scores[lang][lang] for lang in langs}, "all": f1_scores["all"]}
     f1_scores_df = pd.DataFrame(scores_data).T.round(4)
     f1_scores_df.rename_axis(index="Fine-tune on", columns="Evaluated on", inplace=True)
