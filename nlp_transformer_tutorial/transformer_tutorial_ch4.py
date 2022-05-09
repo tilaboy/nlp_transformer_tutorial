@@ -57,7 +57,7 @@ def create_tag_names(tags):
 
 def dataset_summary(panx_dataset):
     split2freqs = defaultdict(Counter)
-    for split, dataset in panx_de.items():
+    for split, dataset in panx_dataset.items():
         for row in dataset["ner_tags_str"]:
             for tag in row:
                 if tag.startswith("B"):
@@ -110,22 +110,24 @@ class XLMRobertaForTokenClassification(RobertaPreTrainedModel):
         return TokenClassifierOutput(loss = loss, logits = logits, hidden_states = outputs.hidden_states, attentions = outputs.attentions)
 
 
-def tokenize_and_align_labels(examples):
-    tokenized_inputs = xlmr_tokenizer(examples["tokens"], truncation=True, is_split_into_words=True)
-    labels = []
-    for idx, label in enumerate(examples["ner_tags"]):
-        word_ids = tokenized_inputs.word_ids(batch_index=idx)
-        previous_word_idx = None
-        label_ids = []
-        for word_idx in word_ids:
-            if word_idx is None or word_idx == previous_word_idx:
-                label_ids.append(-100)
-            else:
-                label_ids.append(label[word_idx])
-            previous_word_idx = word_idx
-        labels.append(label_ids)
-    tokenized_inputs["labels"] = labels
-    return tokenized_inputs
+def tokenize_and_align_labels(tokenizer):
+    def prepare_token_and_label(examples):
+        tokenized_inputs = tokenizer(examples["tokens"], truncation=True, is_split_into_words=True)
+        labels = []
+        for idx, label in enumerate(examples["ner_tags"]):
+            word_ids = tokenized_inputs.word_ids(batch_index=idx)
+            previous_word_idx = None
+            label_ids = []
+            for word_idx in word_ids:
+                if word_idx is None or word_idx == previous_word_idx:
+                    label_ids.append(-100)
+                else:
+                    label_ids.append(label[word_idx])
+                previous_word_idx = word_idx
+            labels.append(label_ids)
+        tokenized_inputs["labels"] = labels
+        return tokenized_inputs
+    return prepare_token_and_label
 
 def align_predictions(predictions, label_ids):
     preds = np.argmax(predictions, axis=2)
@@ -147,8 +149,8 @@ def compute_metrics(eval_pred):
     return {"f1": f1_score(y_true, y_pred)}
 
 
-def encode_panx_dataset(corpus):
-    return corpus.map(tokenize_and_align_labels, batched=True, remove_columns=['langs', 'ner_tags', 'tokens'])
+def encode_panx_dataset(corpus, tokenizer):
+    return corpus.map(tokenize_and_align_labels(tokenizer), batched=True, remove_columns=['langs', 'ner_tags', 'tokens'])
 
 
 def get_train_args(output_dir, batch_size, num_epochs, logging_steps):
@@ -165,10 +167,10 @@ def get_train_args(output_dir, batch_size, num_epochs, logging_steps):
                              push_to_hub=False)
 
 def model_init(model_name, model_config, device):
-    def init_func()
+    def init_func():
         return XLMRobertaForTokenClassification.from_pretrained(
             model_name,
-            config=config).to(device)
+            config=model_config).to(device)
     return init_func
 
 
@@ -253,7 +255,7 @@ def main():
     print(tags)
     panx_de = panx_ch["de"].map(create_tag_names(tags))
     print(panx_de["train"][0])
-    dataset_summary(panx_ch["de"])
+    dataset_summary(panx_de)
 
     LOGGER.info('BERT V.S. Roberta')
     text = "Jack Sparrow loves New York!"
@@ -283,7 +285,7 @@ def main():
     print(df_example_encoded.describe())
     panx_encoded = dict()
     for lang in langs:
-        panx_encoded[lang] = encode_panx_dataset(panx_ch[lang])
+        panx_encoded[lang] = encode_panx_dataset(panx_ch[lang], xlmr_tokenizer)
     xlmr_data_collator = DataCollatorForTokenClassification(xlmr_tokenizer)
 
     de_model_path = f"{xlmr_model_name}-finetuned-panx-de"
@@ -388,7 +390,7 @@ def main():
     de_fr_trainer = train_model(xlmr_model_name,
                                 xlmr_config,
                                 "xlm-roberta-base-finetuned-panx-de-fr",
-                                xlmr_data_collator
+                                xlmr_data_collator,
                                 panx_all_encoded["train"],
                                 panx_all_encoded["validation"],
                                 xlmr_tokenizer,
@@ -414,7 +416,7 @@ def main():
     all_trainer = train_model(xlmr_model_name,
                               xlmr_config,
                               "xlm-roberta-base-finetuned-panx-all",
-                              xlmr_data_collator
+                              xlmr_data_collator,
                               corpora_encoded["train"],
                               corpora_encoded["validation"],
                               xlmr_tokenizer,
