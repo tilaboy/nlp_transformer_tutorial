@@ -17,6 +17,7 @@ pandas = "^1.1"
 numpy = "^1.19"
 matplotlib = "^3.3"
 umap-learn = {extras = ["plot"], version = "^0.5.3"}
+seqeval = "^1.2.2"
 
 [tool.poetry.dev-dependencies]
 flake8 = "^4.0"
