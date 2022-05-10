@@ -302,10 +302,11 @@ def main():
                                device)
     print('tags to predict', tags)
     text_de = "Jeff Dean ist ein Informatiker bei Google in Kalifornien"
-    tag_text(text_de, tags, trainer.model, xlmr_tokenizer)
+    text_de_pred = tag_text(text_de, tags, xlmr_trainer.model, xlmr_tokenizer)
     text_fr = "Jeff Dean est informaticien chez Google en Californie"
-    tag_text(text_fr, tags, trainer.model, xlmr_tokenizer)
-
+    text_fr_pred = tag_text(text_fr, tags, xlmr_trainer.model, xlmr_tokenizer)
+    print(text_de_pred)
+    print(text_fr_pred)
 
     def forward_pass_with_label(batch):
         # Convert dict of lists to list of dicts suitable for data collator
