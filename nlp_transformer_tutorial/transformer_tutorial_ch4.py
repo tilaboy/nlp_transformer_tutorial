@@ -43,7 +43,7 @@ def fetch_data(langs):
         ds = load_dataset("xtreme", name=f"PAN-X.{lang}")
         # Shuffle and downsample each split according to spoken proportion
         for split in ds:
-            nr_to_select = int(frac * ds[split].num_rows / 4)
+            nr_to_select = int(frac * ds[split].num_rows / 10)
             print(f'{lang}-{split}: {nr_to_select} out of {ds[split].num_rows}')
             panx_ch[lang][split] = ( ds[split].shuffle(seed=0).select(range(nr_to_select)))
     return panx_ch
@@ -129,7 +129,7 @@ def tokenize_and_align_labels(tokenizer):
         return tokenized_inputs
     return prepare_token_and_label
 
-def align_predictions(predictions, label_ids):
+def align_predictions(predictions, label_ids, index2tag):
     preds = np.argmax(predictions, axis=2)
     batch_size, seq_len = preds.shape
     labels_list, preds_list = [], []
@@ -138,16 +138,17 @@ def align_predictions(predictions, label_ids):
         for seq_idx in range(seq_len):
             # Ignore label IDs = -100
             if label_ids[batch_idx, seq_idx] != -100:
-                example_labels.append(index2tag[label_ids[batch_idx] [seq_idx]])
+                example_labels.append(index2tag[label_ids[batch_idx][seq_idx]])
                 example_preds.append(index2tag[preds[batch_idx][seq_idx]])
             labels_list.append(example_labels)
             preds_list.append(example_preds)
     return preds_list, labels_list
 
-def compute_metrics(eval_pred):
-    y_pred, y_true = align_predictions(eval_pred.predictions, eval_pred.label_ids)
-    return {"f1": f1_score(y_true, y_pred)}
-
+def get_compute_metrics(index2tag):
+    def compute_metrics(eval_pred):
+        y_pred, y_true = align_predictions(eval_pred.predictions, eval_pred.label_ids, index2tag)
+        return {"f1": f1_score(y_true, y_pred)}
+    return compute_metrics
 
 def encode_panx_dataset(corpus, tokenizer):
     return corpus.map(tokenize_and_align_labels(tokenizer), batched=True, remove_columns=['langs', 'ner_tags', 'tokens'])
@@ -189,7 +190,7 @@ def train_model(model_name,
     trainer = Trainer(model_init=model_init(model_name, config, device),
                       args=get_train_args(output_dir, batch_size, num_epochs, logging_steps),
                       data_collator=data_collator,
-                      compute_metrics=compute_metrics,
+                      compute_metrics=get_compute_metrics(config.id2label),
                       train_dataset=train_set,
                       eval_dataset=validation_set,
                       tokenizer=tokenizer)
@@ -204,6 +205,7 @@ def plot_confusion_matrix(y_preds, y_true, labels, output_name):
     disp.plot(cmap="Blues", values_format=".2f", ax=ax, colorbar=False)
     plt.title("Normalized confusion matrix")
     plt.savefig(output_name)
+
 
 def get_samples(df):
     for _, row in df.iterrows():
@@ -279,6 +281,7 @@ def main():
                                              num_labels=tags.num_classes,
                                              id2label=index2tag,
                                              label2id=tag2index)
+    print(f'lab mapper in config: {xlmr_config.id2label}')
     xlmr_model = XLMRobertaForTokenClassification.from_pretrained(xlmr_model_name, config=xlmr_config).to(device)
     input_ids = xlmr_tokenizer.encode(text, return_tensors="pt")
     df_example_encoded = pd.DataFrame([xlmr_tokens, input_ids[0].numpy()], index=["Tokens", "Input IDs"])
