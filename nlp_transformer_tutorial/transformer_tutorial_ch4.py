@@ -43,7 +43,7 @@ def fetch_data(langs):
         ds = load_dataset("xtreme", name=f"PAN-X.{lang}")
         # Shuffle and downsample each split according to spoken proportion
         for split in ds:
-            nr_to_select = int(frac * ds[split].num_rows / 10)
+            nr_to_select = int(frac * ds[split].num_rows / 2)
             print(f'{lang}-{split}: {nr_to_select} out of {ds[split].num_rows}')
             panx_ch[lang][split] = ( ds[split].shuffle(seed=0).select(range(nr_to_select)))
     return panx_ch
@@ -67,7 +67,7 @@ def dataset_summary(panx_dataset):
     print(df_split_summary.describe())
 
 
-def tag_text(text, tags, model, tokenizer):
+def tag_text(text, tags, model, tokenizer, device):
     # Get tokens with special characters
     token_obj = tokenizer(text, return_tensors="pt")
     tokens = token_obj.tokens()
@@ -225,11 +225,12 @@ def get_f1_score(trainer, dataset):
     return trainer.predict(dataset).metrics["test_f1"]
 
 
-def train_on_subset(model_name, config, output_dir, dataset, num_samples, tokenizer, device='cpu'):
+def train_on_subset(model_name, config, output_dir, data_collator, dataset, num_samples, tokenizer, device='cpu'):
     train_ds = dataset["train"].shuffle(seed=42).select(range(num_samples))
     trainer = train_model(model_name,
                           config,
                           output_dir,
+                          data_collator,
                           train_ds,
                           dataset["validation"],
                           tokenizer,
@@ -302,9 +303,9 @@ def main():
                                device)
     print('tags to predict', tags)
     text_de = "Jeff Dean ist ein Informatiker bei Google in Kalifornien"
-    text_de_pred = tag_text(text_de, tags, xlmr_trainer.model, xlmr_tokenizer)
+    text_de_pred = tag_text(text_de, tags, xlmr_trainer.model, xlmr_tokenizer, device)
     text_fr = "Jeff Dean est informaticien chez Google en Californie"
-    text_fr_pred = tag_text(text_fr, tags, xlmr_trainer.model, xlmr_tokenizer)
+    text_fr_pred = tag_text(text_fr, tags, xlmr_trainer.model, xlmr_tokenizer, device)
     print(text_de_pred)
     print(text_fr_pred)
 
@@ -367,10 +368,10 @@ def main():
     df['total_loss'] = df['loss'].apply(sum)
     df_tmp = df.sort_values(by='total_loss', ascending=False).head(5)
     for sample in get_samples(df_tmp):
-        print(display(sample))
+        print(sample)
     df_tmp = df.loc[df["input_tokens"].apply(lambda x: u"\u2581(" in x)].head(5)
     for sample in get_samples(df_tmp):
-        print(display(sample))
+        print(sample)
 
     f1_scores = defaultdict(dict)
     for lang in ['de', 'fr', 'it', 'en']:
@@ -379,7 +380,14 @@ def main():
 
     metrics_df = pd.DataFrame()
     for num_samples in [200, 500, 1000, 1500, 2000]:
-        res = train_on_subset(xlmr_model_name, xlmr_config, de_model_path, panx_encoded['fr'], num_samples, xlmr_tokenizer, device)
+        res = train_on_subset(xlmr_model_name,
+                              xlmr_config,
+                              de_model_path,
+                              xlmr_data_collator,
+                              panx_encoded['fr'],
+                              num_samples,
+                              xlmr_tokenizer,
+                              device)
         metrics_df = metrics_df.append(res, ignore_index=True)
     fig, ax = plt.subplots()
     ax.axhline(f1_scores["de"]["fr"], ls="--", color="r")
@@ -408,7 +416,14 @@ def main():
     for lang in langs[1:]:
         output_dir = f"xlm-roberta-base-finetuned-panx-{lang}"
         # Fine-tune on monolingual corpus
-        metrics = train_on_subset(xlmr_model, xlmr_config, output_dir, panx_encoded[lang], panx_encoded[lang]["train"].num_rows, xlmr_tokenizer, device)
+        metrics = train_on_subset(xlmr_model_name,
+                                  xlmr_config,
+                                  output_dir,
+                                  xlmr_data_collator,
+                                  panx_encoded[lang],
+                                  panx_encoded[lang]["train"].num_rows,
+                                  xlmr_tokenizer,
+                                  device)
         # Collect F1-scores in common dict
         f1_scores[lang][lang] = metrics["f1_score"][0]
         # Add monolingual corpus to list of corpora to concatenate
@@ -419,7 +434,7 @@ def main():
     all_joined_path = "xlm-roberta-base-finetuned-panx-all"
     all_trainer = train_model(xlmr_model_name,
                               xlmr_config,
-                              "xlm-roberta-base-finetuned-panx-all",
+                              all_joined_path,
                               xlmr_data_collator,
                               corpora_encoded["train"],
                               corpora_encoded["validation"],
