@@ -28,6 +28,7 @@ pytest-cov = "3.0.0"
 [tool.poetry.scripts]
 transformer_tutorial_ch2 = 'nlp_transformer_tutorial.transformer_tutorial_ch2:main'
 transformer_tutorial_ch4 = 'nlp_transformer_tutorial.transformer_tutorial_ch4:main'
+transformer_tutorial_ch5 = 'nlp_transformer_tutorial.transformer_tutorial_ch5:main'
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
